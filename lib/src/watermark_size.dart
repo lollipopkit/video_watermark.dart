@@ -9,9 +9,7 @@ class WatermarkSize {
   const WatermarkSize(this.width, this.height);
 
   /// The height and width of the image are same as in [width].
-  factory WatermarkSize.symmertric(double width) {
-    return WatermarkSize(width, -1);
-  }
+  const WatermarkSize.symmertric(double width) : this(width, -1);
 
   String toCommand() {
     return 'scale=$width:$height, ';
