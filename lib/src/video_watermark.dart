@@ -1,10 +1,9 @@
 import 'dart:io';
-import 'package:flutter/material.dart' show ValueSetter, debugPrint;
 import 'package:ffmpeg_kit_flutter_min/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_min/return_code.dart';
 import 'package:ffmpeg_kit_flutter_min/session_state.dart';
-import 'package:path_provider/path_provider.dart'
-    show getApplicationDocumentsDirectory;
+import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:path_provider/path_provider.dart' show getApplicationDocumentsDirectory;
 import 'output_format.dart';
 import 'trim_video.dart';
 import 'watermark.dart';
@@ -44,12 +43,12 @@ class VideoWatermark {
   /// Callback triggered when the video convertion completed.
   ///
   /// Return value on successful conversion will be `path of converted video` else will be `null`.
-  final ValueSetter<String?>? onSave;
+  final void Function(String? path)? onSaved;
 
   /// Callback with video conversion completion percentage.
   ///
   /// Value from `0 - 1.0`
-  final ValueSetter<double>? progress;
+  final void Function(double progress)? onProgressUpdate;
 
   /// Creates Watermark in video with the image in local storage
   ///
@@ -63,104 +62,99 @@ class VideoWatermark {
     this.outputFormat = OutputFormat.mp4,
     this.savePath,
     this.videoTrim,
-    this.onSave,
-    this.progress,
+    this.onSaved,
+    this.onProgressUpdate,
   });
 
   /// Genrates video in the output path.
   Future<void> generateVideo() async {
-    String? outputPath = savePath ??
-        await getApplicationDocumentsDirectory()
-            .then((value) => value.path + '/');
-
-    int time = DateTime.now().millisecond;
-
-    String trimmedVideo =
-        '$outputPath${'trimmed_$time'}.${outputFormat.toString().split(".").last}';
-
-    String? outputVideo =
-        '$outputPath${videoFileName ?? 'videowatermark_$time'}.${outputFormat.toString().split(".").last}';
+    final outputPath = await () async {
+      if (savePath != null) return savePath;
+      final appDocDir = await getApplicationDocumentsDirectory();
+      return appDocDir.path.endsWith('/') ? appDocDir.path : '${appDocDir.path}/';
+    }();
+    final time = DateTime.now().millisecond;
+    final ext = outputFormat.toString().split('.').last;
+    final trimmedVideo = '$outputPath${'trimmed_$time'}.$ext';
+    final outputVideo = '$outputPath${videoFileName ?? 'videowatermark_$time'}.$ext';
 
     if (videoTrim != null) {
       double _progress = 0;
-      await _trimVideo(
-        trimmedVideo,
-        (tempVideoSave) {
-          if (tempVideoSave) {
-            if (watermark != null) {
-              _addWatermark(
-                trimmedVideo,
-                outputVideo,
-                (outputVideoSave) {
-                  if (outputVideoSave) {
-                    File(trimmedVideo).delete();
-                    onSave?.call(outputVideo);
-                  }
-                },
-                (p) {
-                  progress?.call(_progress + p / 2);
-                },
-              );
-            } else {
-              onSave?.call(trimmedVideo);
+
+      void onDone(bool tempVideoSave) {
+        if (tempVideoSave) {
+          if (watermark == null) {
+            onSaved?.call(trimmedVideo);
+            return;
+          }
+
+          void onDone(bool outputVideoSave) {
+            if (outputVideoSave) {
+              File(trimmedVideo).delete();
+              onSaved?.call(outputVideo);
             }
           }
-        },
-        (p) {
-          if (watermark != null) {
-            _progress = p / 2;
-          } else {
-            _progress = p;
+
+          void onProgress(double p) {
+            onProgressUpdate?.call(_progress + p / 2);
           }
-          progress?.call(_progress);
-        },
-      );
+
+          _addWatermark(trimmedVideo, outputVideo, onDone, onProgress);
+        }
+      }
+
+      void onProgress(double p) {
+        if (watermark != null) {
+          _progress = p / 2;
+        } else {
+          _progress = p;
+        }
+        onProgressUpdate?.call(_progress);
+      }
+
+      await _trimVideo(trimmedVideo, onDone, onProgress);
     } else {
-      _addWatermark(
-        sourceVideoPath,
-        outputVideo,
-        (outputVideoSave) {
-          if (outputVideoSave) {
-            onSave?.call(outputVideo);
-          }
-        },
-        progress,
-      );
+      void onDone(bool outputVideoSave) {
+        if (outputVideoSave) {
+          onSaved?.call(outputVideo);
+        }
+      }
+
+      await _addWatermark(sourceVideoPath, outputVideo, onDone, onProgressUpdate);
     }
   }
 
   Future<void> _addWatermark(
     String sourceVideo,
     String outputVideo,
-    ValueSetter<bool> onDone,
-    ValueSetter<double>? progress,
+    void Function(bool) onDone,
+    void Function(double)? onProgressUpdate,
   ) async {
-    String command = await watermark!
-        .toCommand()
-        .then((value) => '-i $sourceVideo $value $outputVideo');
-    await _runFFmpegCommand(command, onDone, progress);
+    final watermarkCmd = await watermark!.toCommand();
+    final command = '-i $sourceVideo $watermarkCmd $outputVideo';
+    await _runFFmpegCommand(command, onDone, onProgressUpdate);
   }
 
   Future<void> _trimVideo(
     String outputVideo,
-    ValueSetter<bool> onDone,
-    ValueSetter<double>? progress,
+    void Function(bool) onDone,
+    void Function(double)? onProgressUpdate,
   ) async {
-    String command =
-        ' -ss ${videoTrim!.start} -i $sourceVideoPath -t ${videoTrim!.duration} -avoid_negative_ts make_zero $outputVideo';
+    final command = ' -ss ${videoTrim!.start}'
+        ' -i $sourceVideoPath'
+        ' -t ${videoTrim!.duration}'
+        ' -avoid_negative_ts make_zero $outputVideo';
 
-    await _runFFmpegCommand(command, onDone, progress);
+    await _runFFmpegCommand(command, onDone, onProgressUpdate);
   }
 
   Future<void> _runFFmpegCommand(
     String command,
-    ValueSetter<bool> onDone,
-    ValueSetter<double>? progress,
+    void Function(bool) onDone,
+    void Function(double)? progress,
   ) async {
     Duration? videoDuration;
-
     bool getDuration = false;
-
     double _progress = 0;
 
     await FFmpegKit.executeAsync(
@@ -176,7 +170,7 @@ class VideoWatermark {
           onDone.call(true);
         } else {
           debugPrint("Video save failed");
-          onSave?.call(null);
+          onSaved?.call(null);
           onDone.call(false);
         }
       },
